@@ -39,6 +39,9 @@
 			</array>
 			<key>IOProbeScore</key>
 			<integer>9999</integer>
+			<!-- Local X515EP extension: preset profiles/FnLock/50..100% charge, no lighting or custom curves. -->
+			<key>X515EPControls</key>
+			<true/>
 			<key>IOProviderClass</key>
 			<string>IOACPIPlatformDevice</string>
 		</dict>

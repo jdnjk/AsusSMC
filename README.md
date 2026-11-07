@@ -1,5 +1,27 @@
 # AsusSMC
 
+> **X515EP adaptation / work in progress.** This fork adds retained performance intent with battery fallback and AC restoration, 50–100% charge requests, Fn Lock and a capability-gated ABI 5 app interface. No custom fan curves, power limits or lighting protocol is enabled for this target. CI compilation is not hardware validation. The matching control app is maintained separately and is not bundled here.
+
+[![Build AsusSMC](https://github.com/jdnjk/AsusSMC/actions/workflows/build.yml/badge.svg)](https://github.com/jdnjk/AsusSMC/actions/workflows/build.yml)
+
+## 自动构建 / Build artifacts
+
+Push、Pull Request 和手动运行会触发 GitHub Actions，在 macOS Intel runner 上分别生成 **Debug / Release 的 AsusSMC.kext ZIP**。运行页面的 **Artifacts** 提供驱动包、SHA-256 校验值和构建日志；失败时仍上传诊断日志。保留上游许可证，不上传本机 EFI、配置或 SDK 二进制。
+
+完整说明：[构建与下载指南](docs/BUILD.zh-CN.md)。
+
+```bash
+bash build.sh test     # hardware-free host tests
+bash build.sh Release  # macOS + Xcode; pinned, verified SDKs downloaded as needed
+bash build.sh all      # Debug and Release; no installation
+```
+
+Outputs: `build/dist/<configuration>/`. Dependencies are pinned in `Scripts/dependencies.lock.json`; Lilu/VirtualSMC use official DEBUG release bundles, not source trees masquerading as kexts. No third-party download proxy or remote shell `eval` is required.
+
+## Original upstream project
+
+The badges and credits below refer to the original upstream, not to releases of this experimental fork.
+
 [![Github release](https://img.shields.io/github/release/hieplpvip/AsusSMC.svg?color=blue)](https://github.com/hieplpvip/AsusSMC/releases/latest)
 [![Github downloads](https://img.shields.io/github/downloads/hieplpvip/AsusSMC/total.svg?color=blue)](https://github.com/hieplpvip/AsusSMC/releases)
 [![Build Status](https://travis-ci.com/hieplpvip/AsusSMC.svg?branch=master)](https://travis-ci.com/hieplpvip/AsusSMC)

@@ -1,0 +1,67 @@
+name: Build AsusSMC
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asussmc-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Host policy and build-tool tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Run hardware-free tests
+        run: bash build.sh test
+
+  build:
+    name: macOS x86_64 / ${{ matrix.configuration }}
+    needs: tests
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Fetch pinned SDKs, build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          bash build.sh "${{ matrix.configuration }}" 2>&1 | tee build/logs/build-job.log
+      - name: Upload kext ZIP and checksums
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AsusSMC-${{ matrix.configuration }}-${{ github.sha }}
+          path: build/dist/${{ matrix.configuration }}/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Upload diagnostics, including failed builds
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AsusSMC-${{ matrix.configuration }}-logs-${{ github.sha }}
+          path: |
+            build/logs/
+            build/toolchain.txt
+            build/dependencies.lock.json
+          if-no-files-found: warn
+          retention-days: 14

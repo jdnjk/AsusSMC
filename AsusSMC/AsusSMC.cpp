@@ -6,6 +6,8 @@
 //
 
 #include "AsusSMC.hpp"
+#include "AsusControlsImpl.hpp"
+#include "AsusControlClient.hpp"
 
 bool ADDPR(debugEnabled) = false;
 uint32_t ADDPR(debugPrintDelay) = 0;
@@ -64,19 +66,12 @@ bool AsusSMC::start(IOService *provider) {
 
     atkDevice = (IOACPIPlatformDevice *)provider;
 
+    x515epControls = getProperty("X515EPControls") == kOSBooleanTrue;
     parse_WDG();
-
-    initATKDevice();
-
-    initALSDevice();
-
-    initEC0Device();
-
-    initBattery();
-
-    initVirtualKeyboard();
-
-    startATKDevice();
+    if (x515epControls && !wmiGuidValid) {
+        SYSLOG("atk", "X515EP controls require an ASUS method GUID in _WDG");
+        return false;
+    }
 
     workloop = getWorkLoop();
     if (!workloop) {
@@ -90,6 +85,27 @@ bool AsusSMC::start(IOService *provider) {
         DBGLOG("atk", "Could not open command gate");
         return false;
     }
+
+    if (x515epControls) {
+        controlLock = IOLockAlloc();
+        if (!controlLock) { stop(provider); return false; }
+    }
+    initATKDevice();
+    if (!x515epControls) initALSDevice();
+    initEC0Device();
+    initBattery();
+    if (x515epControls) initControls();
+    initVirtualKeyboard();
+    startATKDevice();
+
+    // One timer owns both sensors and AC reconciliation, independent of app/VirtualSMC callbacks.
+    poller = IOTimerEventSource::timerEventSource(this, sensorTimer);
+    if (!poller || workloop->addEventSource(poller) != kIOReturnSuccess) {
+        SYSLOG("atk", "Could not create sensor/control timer");
+        stop(provider);
+        return false;
+    }
+    poller->setTimeoutMS(SensorUpdateTimeoutMS);
 
     setProperty("IsTouchpadEnabled", true);
     setProperty("Copyright", "Copyright © 2018-2020 Le Bao Hiep. All rights reserved.");
@@ -112,6 +128,8 @@ bool AsusSMC::start(IOService *provider) {
 }
 
 void AsusSMC::stop(IOService *provider) {
+    if (controlACNotify) { controlACNotify->remove(); controlACNotify = nullptr; }
+    OSSafeReleaseNULL(controlACDevice);
     if (poller) {
         poller->cancelTimeout();
     }
@@ -125,34 +143,41 @@ void AsusSMC::stop(IOService *provider) {
     OSSafeReleaseNULL(poller);
     OSSafeReleaseNULL(command_gate);
 
-    _publishNotify->remove();
-    _terminateNotify->remove();
-    _notificationServices->flushCollection();
+    if (_publishNotify) _publishNotify->remove();
+    if (_terminateNotify) _terminateNotify->remove();
+    if (_notificationServices) _notificationServices->flushCollection();
     OSSafeReleaseNULL(_publishNotify);
     OSSafeReleaseNULL(_terminateNotify);
     OSSafeReleaseNULL(_notificationServices);
 
     OSSafeReleaseNULL(kbdDevice);
+    if (controlLock) { IOLockFree(controlLock); controlLock = nullptr; }
 
     super::stop(provider);
     return;
 }
 
 IOReturn AsusSMC::message(uint32_t type, IOService *provider, void *argument) {
-    DBGLOG("atk", "Received message: %u Type %x Provider %s", *((uint32_t *)argument), type, provider ? provider->getName() : "unknown");
+    DBGLOG("atk", "Received message type %x Provider %s", type, provider ? provider->getName() : "unknown");
 
     switch (type) {
         case kIOACPIMessageDeviceNotification:
         {
+            if (!argument) return kIOReturnBadArgument;
             if (directACPImessaging) {
                 handleMessage(*((uint32_t *)argument));
             } else {
                 uint32_t event = *((uint32_t *)argument);
                 OSNumber *arg = OSNumber::withNumber(event, 32);
-                uint32_t res;
-                atkDevice->evaluateInteger("_WED", &res, (OSObject **)&arg, 1);
+                if (!arg) return kIOReturnNoMemory;
+                // X515EP _WED(0xff) dequeues one code. Drain the bounded queue, not just one event.
+                for (unsigned i = 0; i < 16; ++i) {
+                    uint32_t res = 0;
+                    if (atkDevice->evaluateInteger("_WED", &res, (OSObject **)&arg, 1) != kIOReturnSuccess || !res || res > 0xffff) break;
+                    handleMessage((int)res);
+                    if (!x515epControls || event != 0xff) break;
+                }
                 arg->release();
-                handleMessage(res);
             }
             break;
         }
@@ -198,6 +223,7 @@ int AsusSMC::wmi_parse_guid(const char *in, char *out) {
 }
 
 int AsusSMC::wmi_evaluate_method(uint32_t method_id, uint32_t arg0, uint32_t arg1) {
+    if (!wmi_method[0]) return -1;
     OSObject *params[3];
 
     struct wmi_args args = {
@@ -209,7 +235,11 @@ int AsusSMC::wmi_evaluate_method(uint32_t method_id, uint32_t arg0, uint32_t arg
     params[1] = OSNumber::withNumber(method_id, 32);
     params[2] = OSData::withBytes(&args, sizeof(wmi_args));
 
-    uint32_t val;
+    if (!params[0] || !params[1] || !params[2]) {
+        for (auto *param : params) if (param) param->release();
+        return -1;
+    }
+    uint32_t val = 0;
     IOReturn ret = atkDevice->evaluateInteger(wmi_method, &val, params, 3);
     params[0]->release();
     params[1]->release();
@@ -238,40 +268,31 @@ bool AsusSMC::wmi_dev_is_present(uint32_t dev_id) {
 }
 
 void AsusSMC::parse_WDG() {
-    OSObject *wdg;
-    if (atkDevice->evaluateObject("_WDG", &wdg) != kIOReturnSuccess) {
-        SYSLOG("wmi", "No method _WDG!");
-        return;
-    }
-
-    OSData *data = OSDynamicCast(OSData, wdg);
-    if (!data) {
-        SYSLOG("guid", "Cast WDG error!");
-        return;
-    }
-
-    int total = data->getLength() / sizeof(struct guid_block);
-
-    char guid_string[37];
-
-    for (int i = 0; i < total; i++) {
-        struct guid_block *g = (struct guid_block *) data->getBytesNoCopy(i * sizeof(struct guid_block), sizeof(struct guid_block));
-        wmi_parse_guid(g->guid, guid_string);
-
-        if (strncmp(guid_string, ASUS_WMI_MGMT_GUID, 36) == 0) {
-            snprintf(wmi_method, 5, "WM%c%c", g->object_id[0], g->object_id[1]);
-            DBGLOG("wmi", "parse_WDG found WMI method %s", wmi_method);
-            return;
+    OSObject *wdg = nullptr;
+    if (atkDevice->evaluateObject("_WDG", &wdg) == kIOReturnSuccess) {
+        OSData *data = OSDynamicCast(OSData, wdg);
+        if (data && data->getLength() % sizeof(guid_block) == 0) {
+            unsigned total = data->getLength() / sizeof(guid_block);
+            char guid_string[37];
+            for (unsigned i = 0; i < total; i++) {
+                const auto *g = (const guid_block *)data->getBytesNoCopy(i * sizeof(guid_block), sizeof(guid_block));
+                wmi_parse_guid(g->guid, guid_string);
+                if (strncmp(guid_string, ASUS_WMI_MGMT_GUID, 36) == 0 && (g->flags & 2) && g->instance_count &&
+                    g->object_id[0] >= 'A' && g->object_id[0] <= 'Z' && g->object_id[1] >= 'A' && g->object_id[1] <= 'Z') {
+                    snprintf(wmi_method, sizeof(wmi_method), "WM%c%c", g->object_id[0], g->object_id[1]);
+                    wmiGuidValid = atkDevice->validateObject(wmi_method) == kIOReturnSuccess;
+                    break;
+                }
+            }
         }
     }
-
-    // Couldn't find WMI method. Let's assume it's WMNB
-    SYSLOG("wmi", "parse_WDG couldn't find WMI method");
-    lilu_os_strncpy(wmi_method, "WMNB", 5);
+    OSSafeReleaseNULL(wdg);
+    // Retain legacy behavior only outside the explicit X515EP personality.
+    if (!wmiGuidValid && !x515epControls) lilu_os_strncpy(wmi_method, "WMNB", sizeof(wmi_method));
 }
 
 void AsusSMC::initATKDevice() {
-    wmi_evaluate_method(ASUS_WMI_METHODID_INIT, 0, 0);
+    atkInitialized = wmi_evaluate_method(ASUS_WMI_METHODID_INIT, 0, 0) == 1;
 }
 
 void AsusSMC::initALSDevice() {
@@ -384,7 +405,7 @@ void AsusSMC::initBattery() {
     }
 
     isBatteryRSOCAvailable = wmi_dev_is_present(ASUS_WMI_DEVID_RSOC);
-    if (isBatteryRSOCAvailable) {
+    if (isBatteryRSOCAvailable && !x515epControls) {
         toggleBatteryConservativeMode(true);
     }
 }
@@ -404,6 +425,15 @@ void AsusSMC::startATKDevice() {
         DBGLOG("atk", "Direct ACPI message is supported");
         setProperty("IsDirectACPIMessagingSupported", kOSBooleanTrue);
         directACPImessaging = true;
+    }
+
+    // This target explicitly excludes lighting and has no ALS requirement.
+    if (x515epControls) {
+        hasKeyboardBacklight = false;
+        isALSEnabled = false;
+        setProperty("IsKeyboardBacklightSupported", false);
+        setProperty("IsALSEnabled", false);
+        return;
     }
 
     // Check keyboard backlight support
@@ -480,6 +510,7 @@ bool AsusSMC::refreshFan() {
 }
 
 void AsusSMC::handleMessage(int code) {
+    if (handleControlKey(code)) return;
     switch (code) {
         case 0x57: // AC disconnected
         case 0x58: // AC connected
@@ -602,6 +633,8 @@ void AsusSMC::toggleALS(bool state) {
 }
 
 void AsusSMC::toggleBatteryConservativeMode(bool state) {
+    // X515EP has one explicit 50..100% owner; legacy BDVT must not overwrite it with 80/100.
+    if (x515epControls) return;
     if (!isBatteryRSOCAvailable) {
         DBGLOG("batt", "RSOC unavailable");
         return;
@@ -809,8 +842,7 @@ void AsusSMC::dispatchMessage(int message, void *data) {
 }
 
 void AsusSMC::registerVSMC() {
-    vsmcNotifier = VirtualSMCAPI::registerHandler(vsmcNotificationHandler, this);
-
+    if (!x515epControls) {
     ALSSensor sensor {ALSSensor::Type::Unknown7, true, 6, false};
     ALSSensor noSensor {ALSSensor::Type::NoSensor, false, 0, false};
     SMCALSValue::Value emptyValue;
@@ -853,6 +885,8 @@ void AsusSMC::registerVSMC() {
         0, nullptr,
         SMC_KEY_ATTRIBUTE_READ | SMC_KEY_ATTRIBUTE_WRITE | SMC_KEY_ATTRIBUTE_FUNCTION));
 
+    } // legacy ALS and keyboard-light SMC keys are not exposed on X515EP
+
     VirtualSMCAPI::addKey(KeyFNum, vsmcPlugin.data, VirtualSMCAPI::valueWithUint8(
         1, nullptr,
         SMC_KEY_ATTRIBUTE_CONST | SMC_KEY_ATTRIBUTE_READ));
@@ -868,13 +902,14 @@ void AsusSMC::registerVSMC() {
         reinterpret_cast<const SMC_DATA *>(&desc), sizeof(desc), SmcKeyTypeFds, nullptr,
         SMC_KEY_ATTRIBUTE_CONST | SMC_KEY_ATTRIBUTE_READ));
 
-    if (isBatteryRSOCAvailable) {
+    if (isBatteryRSOCAvailable && !x515epControls) {
         VirtualSMCAPI::addKey(KeyBDVT, vsmcPlugin.data, VirtualSMCAPI::valueWithFlag(
             false, new BDVT(this),
             SMC_KEY_ATTRIBUTE_READ | SMC_KEY_ATTRIBUTE_WRITE | SMC_KEY_ATTRIBUTE_ATOMIC));
     }
 
     qsort(const_cast<VirtualSMCKeyValue *>(vsmcPlugin.data.data()), vsmcPlugin.data.size(), sizeof(VirtualSMCKeyValue), VirtualSMCKeyValue::compare);
+    vsmcNotifier = VirtualSMCAPI::registerHandler(vsmcNotificationHandler, this);
 }
 
 bool AsusSMC::vsmcNotificationHandler(void *sensors, void *refCon, IOService *vsmc, IONotifier *notifier) {
@@ -885,29 +920,7 @@ bool AsusSMC::vsmcNotificationHandler(void *sensors, void *refCon, IOService *vs
         if (ret == kIOReturnSuccess) {
             DBGLOG("atk", "Submitted plugin");
 
-            self->workloop = self->getWorkLoop();
-            self->poller = IOTimerEventSource::timerEventSource(self, [](OSObject *object, IOTimerEventSource *sender) {
-                auto ls = OSDynamicCast(AsusSMC, object);
-                if (ls) {
-                    ls->refreshALS(true);
-                    ls->refreshFan();
-                }
-            });
-
-            if (!self->poller || !self->workloop) {
-                SYSLOG("atk", "Failed to create poller or workloop");
-                return false;
-            }
-
-            if (self->workloop->addEventSource(self->poller) != kIOReturnSuccess) {
-                SYSLOG("atk", "Failed to add timer event source to workloop");
-                return false;
-            }
-
-            if (self->poller->setTimeoutMS(SensorUpdateTimeoutMS) != kIOReturnSuccess) {
-                SYSLOG("atk", "Failed to set timeout");
-                return false;
-            }
+            // The service already owns one sensor/control timer; do not allocate a second one here.
 
             return true;
         } else if (ret != kIOReturnUnsupported) {

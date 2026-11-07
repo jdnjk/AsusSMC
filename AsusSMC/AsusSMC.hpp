@@ -10,6 +10,9 @@
 
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOCommandGate.h>
+#include <IOKit/IOUserClient.h>
+#include "AsusControlPolicy.hpp"
+#include "AsusKeyPolicy.hpp"
 #include <IOKit/acpi/IOACPIPlatformDevice.h>
 #include "HIDReport.hpp"
 #include "HIDUsageTables.h"
@@ -45,6 +48,11 @@ public:
     void stop(IOService *provider) override;
     IOService *probe(IOService *provider, SInt32 *score) override;
     IOReturn message(uint32_t type, IOService *provider, void *argument) override;
+    IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties,
+                          IOUserClient **handler) override;
+    IOReturn controlGetState(uint32_t state[AsusControl::stateCount]);
+    IOReturn controlSet(uint32_t what, uint32_t value);
+    IOReturn controlKeyActions(uint32_t after, uint32_t *words, size_t *bytes);
 
     void letSleep();
     void toggleAirplaneMode();
@@ -93,7 +101,9 @@ private:
     static constexpr uint8_t NOTIFY_BRIGHTNESS_DOWN_MIN = 0x20;
     static constexpr uint8_t NOTIFY_BRIGHTNESS_DOWN_MAX = 0x2F;
 
-    char wmi_method[5];
+    char wmi_method[5] {0};
+    bool wmiGuidValid {false};
+    bool atkInitialized {false};
     int wmi_parse_guid(const char *in, char *out);
     int wmi_evaluate_method(uint32_t method_id, uint32_t arg0, uint32_t arg1);
     int wmi_get_devstate(uint32_t dev_id);
@@ -140,6 +150,29 @@ private:
     bool isPanelBackLightOn {true};
     bool isTACHAvailable {false};
     bool isBatteryRSOCAvailable {false};
+
+    // X515EP controls are one owner for WMI events and battery thresholds.
+    // No manual fan curves, power limits, lighting protocol or MSR writes exist in this extension.
+    bool x515epControls {false};
+    IOLock *controlLock {nullptr};
+    IOACPIPlatformDevice *controlACDevice {nullptr};
+    IONotifier *controlACNotify {nullptr};
+    static IOReturn controlPowerNotification(void *target, void *, UInt32 type, IOService *, void *argument, vm_size_t);
+    AsusControl::ProfilePolicy profilePolicy;
+    uint32_t controlCaps {0}, lastControlError {0};
+    uint32_t controlLastKey {0}, controlKeySequence {0};
+    int chargeLimitRequest {-1}, fnlockLastRequest {-1};
+    uint32_t hotkeysFirmwareValue {1}, capturedKeys {AsusControl::nativeKeyMask}, controlGpuFan {AsusControl::unknown};
+    uint32_t keyBindings[12] {1, 2, 3, 4, 5, 6, 0, 7, 8, 9, 10, 11};
+    AsusControl::KeyActionQueue keyActions;
+    void dispatchControlAction(unsigned key, uint32_t action);
+    void initControls();
+    void pollControls();
+    void observeControlPowerLocked();
+    void reconcileProfileLocked();
+    IOReturn setFnlockLocked(int value);
+    bool handleControlKey(int code);
+    static void sensorTimer(OSObject *owner, IOTimerEventSource *sender);
 
     uint32_t panelBrightnessLevel {16};
     char backlightEntry[1000];
