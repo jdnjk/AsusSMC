@@ -16,8 +16,10 @@ if [[ "$MODE" == test ]]; then
         else printf '%s\n' 'SKIP: no host C++ compiler.' >&2; exit 77; fi
     fi
     mkdir -p build/tests
-    "$CXX" -std=c++14 -Wall -Wextra -Werror Tests/control_policy_test.cpp -o build/tests/control-policy
-    build/tests/control-policy
+    for TEST in control_policy control_client; do
+        "$CXX" -std=c++14 -Wall -Wextra -Werror "Tests/${TEST}_test.cpp" -o "build/tests/$TEST"
+        "build/tests/$TEST"
+    done
     python3 -I -B -m unittest discover -s Tests -p 'test_*.py' -v
     exit 0
 fi
@@ -26,11 +28,16 @@ if [[ "$(uname -s)" != Darwin ]] || ! command -v xcodebuild >/dev/null 2>&1; the
     printf '%s\n' 'SKIP: macOS with full Xcode is required; no kext was built or installed.' >&2
     exit 77
 fi
-python3 -I Scripts/prepare-deps.py
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+if [[ -n "${ASUSSMC_REQUIRE_SDK_MAJOR:-}" && "${SDK_VERSION%%.*}" != "$ASUSSMC_REQUIRE_SDK_MAJOR" ]]; then
+    printf 'Required macOS SDK major %s, selected %s. Select the correct DEVELOPER_DIR before building.\n' "$ASUSSMC_REQUIRE_SDK_MAJOR" "$SDK_VERSION" >&2
+    exit 2
+fi
 mkdir -p build/logs
-cp Scripts/dependencies.lock.json build/dependencies.lock.json
 xcodebuild -version > build/toolchain.txt
-xcrun --sdk macosx --show-sdk-version >> build/toolchain.txt
+printf 'macOS SDK %s\nminimum deployment target 10.13\n' "$SDK_VERSION" >> build/toolchain.txt
+python3 -I Scripts/prepare-deps.py
+cp Scripts/dependencies.lock.json build/dependencies.lock.json
 CONFIGURATIONS=("$MODE")
 if [[ "$MODE" == all ]]; then CONFIGURATIONS=(Debug Release); fi
 REVISION="$(git rev-parse --short=12 HEAD 2>/dev/null || printf 'local')"

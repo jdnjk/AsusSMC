@@ -33,7 +33,15 @@ public:
         if (selector == AsusControl::getKeyActions) {
             if (args->scalarInputCount != 1 || args->scalarInput[0] > UINT32_MAX || args->structureInputSize)
                 return kIOReturnBadArgument;
-            return driver->controlKeyActions((uint32_t)args->scalarInput[0], (uint32_t *)args->structureOutput, &args->structureOutputSize);
+            // IOKit stores the wire length in uint32_t, while the driver helper uses native size_t.
+            // Passing its address directly is invalid on x86_64 (and casting it would overwrite adjacent fields).
+            const uint32_t capacity = args->structureOutputSize;
+            size_t outputSize = capacity;
+            IOReturn result = driver->controlKeyActions((uint32_t)args->scalarInput[0], (uint32_t *)args->structureOutput, &outputSize);
+            if (result != kIOReturnSuccess) return result;
+            if (outputSize > UINT32_MAX || outputSize > capacity) return kIOReturnNoSpace;
+            args->structureOutputSize = static_cast<uint32_t>(outputSize);
+            return kIOReturnSuccess;
         }
         if (selector == AsusControl::set) {
             if (args->scalarInputCount != 2 || args->structureInputSize || args->scalarInput[0] > UINT32_MAX ||

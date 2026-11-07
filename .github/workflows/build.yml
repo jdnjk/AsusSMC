@@ -26,7 +26,7 @@ jobs:
         run: bash build.sh test
 
   build:
-    name: macOS x86_64 / ${{ matrix.configuration }}
+    name: Tahoe SDK / x86_64 / ${{ matrix.configuration }}
     needs: tests
     runs-on: macos-15-intel
     timeout-minutes: 30
@@ -39,6 +39,16 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Select Xcode 26 and require the Tahoe SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          developer_dir="$(python3 -I Scripts/select-xcode.py --major 26 2>build/logs/toolchain-selection.log)"
+          printf 'DEVELOPER_DIR=%s\n' "$developer_dir" >> "$GITHUB_ENV"
+          printf 'ASUSSMC_REQUIRE_SDK_MAJOR=26\n' >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$developer_dir" xcodebuild -version | tee -a build/logs/toolchain-selection.log
+          DEVELOPER_DIR="$developer_dir" xcrun --sdk macosx --show-sdk-version | tee -a build/logs/toolchain-selection.log
       - name: Fetch pinned SDKs, build and package
         shell: bash
         run: |

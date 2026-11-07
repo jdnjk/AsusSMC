@@ -55,7 +55,7 @@ void AsusSMC::initControls() {
     }
     setProperty("AsusControl-ABI", (unsigned long long)abiVersion, 32);
     setProperty("AsusControl-Capabilities", (unsigned long long)controlCaps, 32);
-    setProperty("AsusControl-Variant", "X515EP local extension (unverified build)");
+    setProperty("AsusControl-Variant", "ASUS WMI control extension (hardware validation pending)");
 }
 
 void AsusSMC::reconcileProfileLocked() {

@@ -6,7 +6,7 @@
 
 ## 自动构建 / Build artifacts
 
-Push、Pull Request 和手动运行会触发 GitHub Actions，在 macOS Intel runner 上分别生成 **Debug / Release 的 AsusSMC.kext ZIP**。运行页面的 **Artifacts** 提供驱动包、SHA-256 校验值和构建日志；失败时仍上传诊断日志。保留上游许可证，不上传本机 EFI、配置或 SDK 二进制。
+Push、Pull Request 和手动运行会触发 GitHub Actions，在 macOS Intel runner 上显式选择 **Xcode 26 / macOS 26（Tahoe）SDK**，分别构建 **Debug / Release 的 AsusSMC.kext ZIP**。最低部署目标为 10.13，不是最高版本上限；**Tahoe SDK 编译不等于 Tahoe 实机已验证**。运行页面的 **Artifacts** 提供驱动包、SHA-256 校验值和构建日志；失败时仍上传诊断日志。保留上游许可证，不上传本机 EFI、配置或 SDK 二进制。
 
 完整说明：[构建与下载指南](docs/BUILD.zh-CN.md)。
 
