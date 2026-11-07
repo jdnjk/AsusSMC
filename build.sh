@@ -45,7 +45,7 @@ for CONFIGURATION in "${CONFIGURATIONS[@]}"; do
     PRODUCTS="$ROOT/build/$CONFIGURATION/products"
     DIST="$ROOT/build/dist/$CONFIGURATION"
     mkdir -p "$PRODUCTS" "$DIST"
-    xcodebuild -project "$ROOT/AsusSMC.xcodeproj" -target AsusSMC -configuration "$CONFIGURATION" \
+    xcodebuild -hideShellScriptEnvironment -project "$ROOT/AsusSMC.xcodeproj" -target AsusSMC -configuration "$CONFIGURATION" \
         ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
         SYMROOT="$ROOT/build/$CONFIGURATION" OBJROOT="$ROOT/build/$CONFIGURATION/obj" \
         CONFIGURATION_BUILD_DIR="$PRODUCTS" \
@@ -53,7 +53,7 @@ for CONFIGURATION in "${CONFIGURATIONS[@]}"; do
     BUNDLE="$PRODUCTS/AsusSMC.kext"
     /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$BUNDLE/Contents/Info.plist"
     VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUNDLE/Contents/Info.plist")"
-    xcrun lipo -verify_arch x86_64 "$BUNDLE/Contents/MacOS/AsusSMC"
+    xcrun lipo "$BUNDLE/Contents/MacOS/AsusSMC" -verify_arch x86_64
     plutil -lint "$BUNDLE/Contents/Info.plist"
     ditto -c -k --keepParent "$BUNDLE" "$DIST/AsusSMC-$VERSION-$CONFIGURATION-$REVISION.zip"
     cp LICENSE.md "$DIST/LICENSE.md"

@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('asussmc_build_deps', ROOT / 'Scripts' / 'prepare-deps.py')
 DEPS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DEPS)
+
+
+class BuildCommandTests(unittest.TestCase):
+    def test_lipo_input_precedes_greedy_verify_arch_list(self):
+        commands = [shlex.split(line.strip()) for line in (ROOT / 'build.sh').read_text().splitlines()
+                    if line.strip().startswith('xcrun lipo ')]
+        self.assertEqual(commands, [['xcrun', 'lipo', '$BUNDLE/Contents/MacOS/AsusSMC', '-verify_arch', 'x86_64']])
+
+    def test_xcode_hides_script_environment_not_diagnostics(self):
+        source = (ROOT / 'build.sh').read_text()
+        self.assertIn('xcodebuild -hideShellScriptEnvironment -project', source)
+        self.assertNotIn('xcodebuild -quiet', source)
 
 
 class SDKPreparationTests(unittest.TestCase):
