@@ -51,7 +51,14 @@ void AsusSMC::initControls() {
     // This also allows an inherited performance mode to fall back on battery and resume on AC.
     if (controlCaps & capProfile) {
         profilePolicy.observeProfile(vivoReadback((uint32_t)wmi_get_devstate(vivoProfileDevice)));
+#if defined(ASUSSMC_BOOT_BALANCED) && ASUSSMC_BOOT_BALANCED
+        // Optional build flavor: immediately request Balanced at driver startup.
+        // A later app SET replaces this transient intent with the user's saved choice.
+        profilePolicy.request(0);
+        reconcileProfileLocked();
+#else
         if (validProfile(profilePolicy.actual)) profilePolicy.request(profilePolicy.actual);
+#endif
     }
     setProperty("AsusControl-ABI", (unsigned long long)abiVersion, 32);
     setProperty("AsusControl-Capabilities", (unsigned long long)controlCaps, 32);

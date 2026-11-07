@@ -86,6 +86,13 @@ int main() {
     p.performanceDrops = UINT32_MAX; p.powerChanges = UINT32_MAX;
     p.observePower(true, false);
     assert(p.performanceDrops == 0 && p.powerChanges == 0);       // defined unsigned counter wrap
+    ProfilePolicy startupBalanced;
+    startupBalanced.observePower(true, true);
+    startupBalanced.observeProfile(2); // firmware's previous mode is not retained in this build flavor
+    assert(startupBalanced.request(0) && startupBalanced.target() == 0 && startupBalanced.desired == 0);
+    assert(startupBalanced.request(1) && startupBalanced.target() == 1 && startupBalanced.desired == 1);
+    // The app's later ABI request replaces only this transient boot intent.
+
     ProfilePolicy delayedBoot;
     delayedBoot.observePower(true, false);
     delayedBoot.observeProfile(-1);
